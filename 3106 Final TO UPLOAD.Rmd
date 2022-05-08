@@ -1,0 +1,523 @@
+---
+title: "Final Project 3106"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r cars}
+Baseball <- read.csv("~/Downloads/team.csv")
+library(tidyverse)
+library(FactoMineR) 
+library(factoextra) 
+library(psych)
+library(stargazer)
+library(ggcorrplot)
+library(caret)
+library(glmnet)
+
+
+string_names <- c("h", "r", "bb", "sv", "fp", "soa", "ra", "er", "era", "ws_win", "triple" ,"ab", "hr", "ha", "ipouts", "e")
+
+
+
+playball <- Baseball[, string_names]
+
+#looking for missing values in our variables 
+
+for (i in seq_along(string_names)){
+  
+  print(sum(is.na(playball[,i])))
+}
+
+table(playball$ws_win)
+
+#We want to clean the data here and turn this into a binary numerical response variable. We want to replace all the Y's with a 1 (positive outcome representing those who've won the world series) and the blanks and N's with zeroes, indicating that team has not won the World Series. 
+
+playball <- playball %>%
+    mutate(ws_win = case_when(
+      ws_win == "Y" ~ 1,
+      ws_win != "Y" ~ 0,
+    ))
+table(playball$ws_win)
+
+
+cat("The dataset has", paste(dim(playball)[1]), "individuals, and", paste(dim(playball)[2]), "variables for each one of them", '\n')
+
+#I would also like to engineer a new feature. The hits allowed (ha) variable tells us how many hits a pitcher gives up (higher levels of hits allowed indicate worse defensive performance.) The hits variable (h) tells us how many htis were scored by batters throughout the course of a given season for a given team, and is a metric of offensive performance. In order to create a variable that combines elements of a team's performance during both the defensive and offensive performance of a team, I will be creating a new variable, HitsRatio, that divides the number of hits scored by batters by the number of hits allowed. 
+
+playball$HitsRatio <- playball$h/playball$ha
+
+#I will also do the same with Runs Scored/Runs Allowed
+
+playball$RunsRatio <- playball$r/playball$ra
+#Now, I want to isolate just the variables I want to plan on using as dependent variables aqnd visualize the relationships between them. 
+
+#Renaming Variables so it's more obvious what they are
+
+playball <- playball %>% 
+  rename(
+    Hits = h,
+    RunsScored = r, 
+    HomeRuns = hr,
+    WalksBatted = bb,
+    Saves = sv,
+    FieldingPercentage = fp,
+    RunsAllowed = ra,
+    Errors = e,
+    AverageEarnedRuns = era,
+    Triples = triple,
+    AtBats = ab,
+    HitsAllowed = ha,
+    OutsPitched = ipouts,
+    Errors = e,
+    EarnedRuns = er,
+    Strikeouts = soa, 
+    )
+
+
+#Normalizing the dataset 
+
+playball_with_response <- playball
+playball <- select(playball, -c("ws_win"))
+
+#nroamlizing the dataframe 
+
+mins <- apply(playball,2,min)
+maxs <- apply(playball,2,max)
+playball_scaled  <- data.frame(scale(playball,center=mins,scale=maxs-mins))
+
+corr <- round(cor(playball_scaled, use = "complete.obs"), 2) 
+
+ggcorrplot(corr, type = "full", lab = TRUE, outline.col = "white", ggtheme = ggplot2::theme_gray, colors = c("#E46726", "white", "#6D9EC1"), lab_col = "black", lab_size = 2,tl.cex = 8, tl.col = "black")
+
+playball_scaled_response <- playball_scaled
+playball_scaled_response$ws_win <- playball_with_response$ws_win
+
+summary(playball)
+
+
+```
+
+```{r}
+colors <- c("#1170AA", "#", "#55AD89")
+
+ggplot(playball_scaled_response, aes(x = Hits, y = HitsAllowed, color = as.factor(ws_win))) +
+  geom_point(alpha = 0.6) +
+  scale_color_manual(values = colors) +
+  labs(color = "World Series Title Status\n", title = "Relationship Between Hits and Hits Allowed") + 
+  scale_color_manual(labels = c("Losers", "Winners"), values = c("#1170AA", "#EF6F6A"))
+
+
+```
+
+```{r}
+colors <- c("#1170AA", "#EF6F6A", "#55AD89")
+
+jitter <- position_jitter(width = 0.05, height = 0.05)
+
+ggplot(playball_scaled_response, aes(x = FieldingPercentage, y = WalksBatted, color = as.factor(ws_win))) +
+  geom_point(position =jitter,alpha = 0.6) +
+  scale_color_manual(values = colors) +
+  labs(color = "World Series Title Status\n", title = "Relationship Between Fielding Percentage and Walks Batted") + 
+  scale_color_manual(labels = c("Losers", "Winners"), values = c("#1170AA", "#EF6F6A")) 
+
+```
+```{r}
+colors <- c("#1170AA", "#EF6F6A", "#55AD89")
+
+
+ggplot(playball_scaled_response, aes(x = HomeRuns, y = Saves, color = as.factor(ws_win))) +
+  geom_point(position = jitter,alpha=0.6) +
+  scale_color_manual(values = colors) +
+  labs(color = "World Series Title Status\n", title = "Relationship Between Home Runs and Saves") 
+  
+
+```
+
+
+```{r}
+ggplot(playball_with_response, aes(x=RunsRatio, color=as.factor(ws_win))) +
+  geom_histogram(fill="white", alpha=0.5, position="identity")
+```
+
+
+```{r pressure, echo=FALSE}
+ggplot(playball_with_response, aes(x=AverageEarnedRuns, color=as.factor(ws_win))) +
+  geom_histogram(fill="white", alpha=0.5, position="identity") + 
+  labs(color = "World Series Title Status\n", title = "Histogram of Average Earned Runs Per Game") + 
+  scale_color_manual(labels = c("Losers", "Winners"), values = c("#1170AA", "#EF6F6A")) 
+```
+
+```{r}
+
+fviz_nbclust(as.matrix(playball_scaled), kmeans, method="wss")
+
+# Based on this graph, it looks like 5 is the optimal number of clusters - we can see that the kink/change in the slope occurs at 6 clusters, so we will mark that as the point of diminishing returns .
+
+k = 5 
+cluster_k <- kmeans(playball_scaled, k, nstart = 20 )
+
+kmeans_basic_table <- data.frame(cluster_k$size, cluster_k$centers)
+kmeans_df <- data.frame(Cluster = cluster_k$cluster, playball_scaled)
+head(kmeans_df)
+
+ggplot(data = kmeans_df, aes(y = Cluster)) + geom_bar(aes(fill = Cluster)) + 
+  ggtitle("Count of Clusters") + 
+  theme(plot.title = element_text(hjust =0.5))
+
+ggplot(kmeans_df, aes(fill=as.factor(playball_scaled_response$ws_win), y=Cluster, x=kmeans_df$Cluster)) + 
+  scale_color_manual(labels = c("Losers", "Winners"), values = c("#1170AA", "#EF6F6A"))+
+  labs(fill = "World Series Title Status\n", title = "Histogram of Cluster Distribution by World Series Title Status") + 
+    geom_bar(position="stack", stat="identity") 
+     
+
+fviz_cluster(cluster_k, data = playball_scaled, geom = c("point"), ellipse.type = "euclid")
+Baseball$Cluster <- as.factor(kmeans_df$Cluster)
+playball_scaled_response$Cluster <- as.factor(kmeans_df$Cluster)
+
+```
+
+
+```{r}
+
+library("viridis")
+library("hrbrthemes")
+cluster_summary <- c()
+for (i in 1:5) {
+
+tempo <- c(apply(playball_scaled[cluster_k$cluster==i,],2,mean),table(playball_scaled[cluster_k$cluster==i,]$type))
+cluster_summary <- rbind(cluster_summary,tempo)
+}
+rownames(cluster_summary) <- c("cluster_1","cluster_2","cluster_3","cluster_4", "cluster_5")
+print(cluster_summary)
+
+ggplot(data= kmeans_df,aes(fill=as.factor(playball_scaled_response$ws_win), y=playball_scaled$Hits, x=Cluster)) +
+    geom_bar(position="stack", stat="identity") +
+    scale_fill_viridis(discrete = T) +
+    theme_ipsum() +
+    xlab("") + labs(color = "World Series Title Status\n", title = "Hits Scored by Cluster")     +
+    scale_color_manual(labels = c("Losers", "Winners"))
+
+ggplot(data= kmeans_df,aes(fill=as.factor(playball_scaled_response$ws_win), y=playball_scaled$RunsScored, x=Cluster)) +
+    geom_bar(position="stack", stat="identity") +
+    scale_fill_viridis(discrete = T) +
+    theme_ipsum() +
+    xlab("") + labs(color = "World Series Title Status\n", title = "Runs Scored by Cluster")     +
+    scale_color_manual(labels = c("Losers", "Winners"))
+
+ggplot(playball_scaled_response, aes(fill = as.factor(ws_win), x = Cluster)) +
+  geom_bar()
+
+ggplot(data=Baseball, aes(x=Baseball$year, fill = Baseball$Cluster)) +
+  xlab("Year") + ylab("Frequency") + 
+  geom_histogram()
+
+ 
+```
+
+```{r}
+
+playball_scaled_to_split <- playball_scaled_response
+playball_scaled_to_split$row_num <- seq.int(nrow(playball_scaled_to_split))
+only_winners <- subset(playball_scaled_to_split, ws_win ==1)
+table(only_winners$ws_win)
+only_losers <- subset(playball_scaled_to_split, ws_win ==0)
+table(only_losers$ws_win)
+
+proportion = nrow(only_winners)/nrow(only_losers)
+proportion
+
+#We'll section off 20% of our data for use in test. This would be 561 rows, so we'll make sure that 24 (4% of our observations in the testing dataset) are composed of World Series Winners. 
+
+winners_row_nums <- sample(only_winners$row_num, 24)
+losers_row_nums <- sample(only_losers$row_num, 561-24)
+total_row_nums <- c(winners_row_nums, losers_row_nums)
+
+winners_sample <- playball_scaled[winners_row_nums, ]
+losers_sample <- playball_scaled[losers_row_nums, ]
+
+dim(winners_sample)
+dim(losers_sample)
+
+
+
+test_scaled <- rbind(winners_sample, losers_sample)
+train_scaled <- playball_scaled_to_split[!playball_scaled_to_split$row_num %in% total_row_nums, ]
+dim(test_scaled)
+dim(train_scaled)
+
+
+winners_sample_response <- playball_scaled_response[winners_row_nums, ]
+losers_sample_response <- playball_scaled_response[losers_row_nums, ]
+
+#Response Variable for Train 
+response_train <- playball_scaled_to_split[!playball_scaled_to_split$row_num %in% total_row_nums, ]$ws_win
+
+
+#Response Variable for Test
+response_test <-  playball_scaled_to_split[playball_scaled_to_split$row_num %in% total_row_nums, ]$ws_win
+
+
+```
+
+
+```{r}
+
+random <- as.integer(rbernoulli((561), p = proportion))
+error <- mean(response_test != round(random))
+cm <- confusionMatrix(as.factor(round(random)), reference = as.factor(response_test), positive = "1")
+
+cm$byClass[c(5,6)]
+
+```
+# Principal Component Analysis
+
+```{r}
+
+train_scaled_variables <- train_scaled
+drop <- c("Cluster","row_num", "ws_win")
+train_scaled_variables = train_scaled_variables[,!(names(train_scaled_variables) %in% drop)]
+
+pca_out <- prcomp(train_scaled_variables, scale=TRUE)
+
+
+screeplot(pca_out, type = "l", npcs = 15, main = "Screeplot of the first 10 PCs")
+abline(h = 1, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 1"),
+       col=c("red"), lty=5, cex=0.6)
+cumpro <- cumsum(pca_out$sdev^2 / sum(pca_out$sdev^2))
+plot(cumpro[0:15], xlab = "PC #", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(v = 6, col="blue", lty=5)
+abline(h = 0.88759, col="blue", lty=5)
+legend("topleft", legend=c("Cut-off @ PC6"),
+       col=c("blue"), lty=5, cex=0.6)
+
+eigen_val <- pca_out$sdev^2
+plot(cumsum(eigen_val) / sum(eigen_val),
+     ylim=c(0, 1))
+abline(h=0.9, col="blue")
+
+#We would want to pick the smallest k above 0.9, because eyeballing for a particular value on this plot would be next to impossible given the sheer number of pieces to the PCA. 
+
+
+hi <- cumsum(eigen_val) / sum(eigen_val)
+which(hi > 0.9)[[1]]
+
+#The cumulative variance plot shows us the amount of cumulative variance explained as the number of principal components increases. 
+
+
+
+#based on the Scree Plot, and the plotting of the eigenvalues, we can see that that 4 is the smallest number of principal componentsfor which the ratio of cumulative sdev^2 over the total sdev^2 is at least 0.9. Therefore, we'll proceed with k=4. 
+
+k <- 4
+
+#Let's look at what the top features are in each principal component.
+
+for (i in 1:4) {
+print(paste("For principal component", i))
+print(head(pca_out$rotation[,i][order(pca_out$rotation[,i],decreasing=TRUE)],6))
+}
+
+fviz_pca_var(pca_out,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07")   # Avoid text overlapping
+             )
+
+fviz_pca_var(pca_out,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07") ,
+             repel = TRUE# Avoid text overlapping
+             )
+summary(pca_out)
+
+```
+
+
+```{r}
+
+w <- pca_out$x[,1:4]
+df_w <- data.frame(response_train, w) 
+my_ols <- lm(response_train ~ ., df_w)
+
+
+lm_summary <- as.data.frame(summary(my_ols)$coefficients)
+lm_summary 
+
+
+# sort features according to p-vals
+features<- head(row.names(lm_summary[order(lm_summary$`Pr(>|t|)`, decreasing=F),]))
+features
+
+
+#transforming our test set using the PCA center and Scale 
+transformed <- function(x) (x-pca_out$center)/pca_out$scale
+
+PCA_scaled <- apply(test_scaled, 1, transformed)
+
+test_W <- t(PCA_scaled) %*%  pca_out$rotation
+
+my_ols_pred <- predict(my_ols, as.data.frame(test_W))
+
+ols_error <- mean(response_test != round(my_ols_pred))
+ols_error
+ols_cm <- confusionMatrix(as.factor(round(my_ols_pred)), reference = as.factor(response_test), positive = "0")
+ols_cm
+
+ols_cm$byClass[c(5,6)]
+
+
+
+```
+
+
+#Naive Bayes 
+```{r}
+set.seed(400)
+
+
+library(e1071)
+train_scaled_variables_cluster <- train_scaled_variables
+train_scaled_variables_cluster$Cluster <- train_scaled$Cluster
+testClusters <- c(Baseball[winners_row_nums, ]$Cluster,Baseball[losers_row_nums, ]$Cluster)
+
+test_scaled_cluster <- test_scaled
+test_scaled_cluster$Cluster <- testClusters
+
+
+nb_X <- naiveBayes(response_train ~., data=train_scaled_variables_cluster, laplace = 100)
+
+
+p_hat <- predict(nb_X, newdata=test_scaled_cluster, type = "raw")
+head(p_hat)
+head(p_hat[,2])
+
+
+#Cut off 
+
+predicted_y = ifelse(p_hat > 0.5, 1, 0)
+
+head(predicted_y)
+
+sum(predicted_y[,1])
+sum(predicted_y[,2])
+
+
+
+#The predict function returns values close to 1 or 0, so it's difficult to determine an opticmal cutoff - this model also predicts primarily ones, so it's unclear whether this model will be optimal in terms of predictive power. 
+
+
+#Predictions for Naive Bayes for X 2
+
+pred_nb <- predict(nb_X, newdata=test_scaled_cluster)
+
+#calculating error 
+
+NBErrorX <- mean(response_test != pred_nb)
+nb_cmX <- confusionMatrix(pred_nb, reference = as.factor(response_test),
+positive = "1")
+
+
+nb_cmX
+NBErrorX
+nb_cmX$byClass[c(5,6)]
+
+
+```
+### Lasso
+```{r}
+lasso.cv <- cv.glmnet(as.matrix(train_scaled_variables), response_train,
+                      lambda = 10^seq(-5, -0.1, length.out = 30),
+                      alpha=1, standardize=T)
+plot(lasso.cv)
+
+
+which_lambda <- which(lasso.cv$lambda == lasso.cv$lambda.1se)
+best <- lasso.cv$glmnet.fit$beta[, which_lambda]
+vector <- as.vector(best)
+head(vector)
+
+
+
+
+prediction <- predict(lasso.cv, s=lasso.cv$lambda.1se, newx=as.matrix(test_scaled), standardize=T)
+lasso_error <- mean(response_test != round(prediction))
+lasso_confusion <- confusionMatrix(factor(round(prediction)), reference = as.factor(response_test), positive ="1")
+lasso_confusion
+lasso_error
+
+```
+
+
+
+```{r}
+
+drop <- c("row_num")
+df = train_scaled[,!(names(train_scaled) %in% drop)]
+
+logreg <- glm(ws_win ~ ., data=df, family=binomial(link="logit"))
+summary(logreg)
+```
+
+
+```{r}
+logreg2 <- glm(ws_win ~ HitsRatio + HitsAllowed + Triples+ AverageEarnedRuns+ EarnedRuns+ RunsScored + Hits, data=df, family=binomial(link="logit"))
+summary(logreg2)
+```
+Now Triples isn't statistically significant! Let's re-form our model. 
+```{r}
+logreg3 <- glm(ws_win ~ HitsRatio + HitsAllowed + AverageEarnedRuns+ EarnedRuns+ RunsScored + Hits, data=df, family=binomial(link="logit"))
+summary(logreg3)
+
+```
+
+
+```{r}
+
+logpredval <- predict(logreg3,test_scaled,type="response")
+mean(logpredval)
+
+
+logpredrounded <- logpredval
+for (i in 1:length(logpredrounded)) {
+  if (logpredrounded[i] < 0.15) { logpredrounded[i] <- 0 }
+    else { logpredrounded[i] <- 1 }
+}
+mean(logpredrounded)
+
+#Let's pick this optimal cutoff value because it closely mirrors the distribution of victories in the overall dataset. 
+
+
+logpredtest <- predict(logreg3,test_scaled,type="response")
+mean(logpredtest)
+## [1] 0.1012888
+#rounding the predictions based on the optimal cutoff found earlier
+logtestrounded <- logpredtest
+for (i in 1:length(logtestrounded)) {
+  if (logtestrounded[i] < 0.215) { logtestrounded[i] <- 0 }
+    else { logtestrounded[i] <- 1 }
+}
+mean(logtestrounded)
+## [1] 0.10576
+
+
+#Calculating Classification Error 
+mean(logtestrounded != response_test)
+conf_log <- table(logtestrounded,response_test)
+print(conf_log)
+#Calculating Precision
+conf_log[2,2]/(conf_log[2,1]+conf_log[2,2])
+
+
+
+  
+#Calculating Recall
+conf_log[2,2]/(conf_log[1,2]+conf_log[2,2])
+
+
+## [1]0.04166667
+
+```
+
+
